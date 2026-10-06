@@ -27,18 +27,29 @@ const time = (iso: string) =>
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 
+/** Price text a runner has typed but not yet saved, keyed by order id. */
+const pendingPrices = new Map<number, string>();
+
 function render() {
-  // Realtime updates re-render everything; keep what someone is typing.
+  // Realtime updates re-render everything; keep what someone is typing or has
+  // picked (price inputs excluded: their value comes from pendingPrices below,
+  // so a price the server has saved can replace a stale local one).
   const kept = new Map<string, string>();
-  app.querySelectorAll<HTMLInputElement>("input[data-keep]").forEach((i) => kept.set(i.dataset.keep!, i.value));
-  const focused = (document.activeElement as HTMLElement | null)?.dataset?.keep;
+  app.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input[data-keep]:not([data-price]), select[data-keep]")
+    .forEach((el) => kept.set(el.dataset.keep!, el.value));
+  const active = document.activeElement as HTMLElement | null;
+  const focused = active?.dataset?.keep;
+  const selection = active instanceof HTMLInputElement ? [active.selectionStart, active.selectionEnd] as const : null;
 
   app.innerHTML = view();
 
-  app.querySelectorAll<HTMLInputElement>("input[data-keep]").forEach((i) => {
-    const v = kept.get(i.dataset.keep!);
-    if (v !== undefined) i.value = v;
-    if (i.dataset.keep === focused) i.focus();
+  app.querySelectorAll<HTMLElement>("[data-keep]").forEach((el) => {
+    const v = kept.get(el.dataset.keep!);
+    if (v !== undefined && (el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) el.value = v;
+    if (el.dataset.keep === focused) {
+      el.focus();
+      if (el instanceof HTMLInputElement && selection) el.setSelectionRange(selection[0], selection[1]);
+    }
   });
 }
 
@@ -112,7 +123,7 @@ function openRunForm(): string {
   return card(`<h2>Going down?</h2>
     <form data-form="open-run" class="row">
       <input name="place" data-keep="place" placeholder="Where to? e.g. Kopitiam B1" maxlength="60" required>
-      <select name="mins" aria-label="Taking orders for">
+      <select name="mins" data-keep="mins" aria-label="Taking orders for">
         ${[5, 10, 15, 20].map((m) => `<option value="${m}" ${m === 10 ? "selected" : ""}>${m} min</option>`).join("")}
       </select>
       <button>Open a run</button>
@@ -138,20 +149,22 @@ function runView(run: Run): string {
 
   const rows = orders.map((o) => {
     const own = o.user_email === me();
+    const pending = pendingPrices.get(o.id);
+    const priceValue = pending !== undefined ? pending : o.price_cents == null ? "" : (o.price_cents / 100).toFixed(2);
     const price = mine
-      ? `<input class="price" data-keep="price-${o.id}" data-price="${o.id}" value="${o.price_cents == null ? "" : (o.price_cents / 100).toFixed(2)}" placeholder="$" inputmode="decimal" aria-label="Price for ${esc(nameOf(o.user_email))}">`
+      ? `<input class="price" data-keep="price-${o.id}" data-price="${o.id}" value="${esc(priceValue)}" placeholder="$" inputmode="decimal" aria-label="Price for ${esc(nameOf(o.user_email))}">`
       : `<span class="amt">${o.price_cents == null ? "—" : money(o.price_cents)}</span>`;
     const paid = o.user_email === run.runner_email
       ? `<span class="muted small">runner</span>`
       : mine
-        ? `<label class="paid"><input type="checkbox" data-paid="${o.id}" ${o.paid ? "checked" : ""}> paid</label>`
+        ? `<label class="paid"><input type="checkbox" data-keep="paid-${o.id}" data-paid="${o.id}" ${o.paid ? "checked" : ""}> paid</label>`
         : o.paid ? `<span class="pill done">paid</span>` : `<span class="muted small">unpaid</span>`;
     return `<li class="${own ? "own" : ""}">
       <span class="who">${esc(nameOf(o.user_email))}</span>
       <span class="item">${esc(o.item)}</span>
       ${price}
       ${paid}
-      ${own && open ? `<button class="link danger" data-action="delete-order" data-id="${o.id}" aria-label="Remove order">✕</button>` : ""}
+      ${own && open ? `<button class="link danger" data-keep="delete-${o.id}" data-action="delete-order" data-id="${o.id}" aria-label="Remove order">✕</button>` : ""}
     </li>`;
   }).join("");
 
@@ -163,8 +176,8 @@ function runView(run: Run): string {
     : "";
 
   const controls = !mine ? "" :
-    run.status === "open" ? `<button data-action="set-status" data-id="${run.id}" data-status="closed">Close orders &amp; go</button>`
-    : run.status === "closed" ? `<button data-action="set-status" data-id="${run.id}" data-status="delivered">Mark delivered</button>`
+    run.status === "open" ? `<button data-keep="status-${run.id}" data-action="set-status" data-id="${run.id}" data-status="closed">Close orders &amp; go</button>`
+    : run.status === "closed" ? `<button data-keep="status-${run.id}" data-action="set-status" data-id="${run.id}" data-status="delivered">Mark delivered</button>`
     : "";
 
   return card(`
@@ -292,16 +305,39 @@ document.addEventListener("change", (e) => {
     const id = Number(el.dataset.paid);
     return void act(async () => check(await db.from("orders").update({ paid: el.checked }).eq("id", id)));
   }
-  if (el.dataset.price) {
-    const cents = parsePrice(el.value);
-    if (cents === undefined) {
-      state.error = `"${el.value}" isn't a price. Try 1.80`;
-      return render();
-    }
-    const id = Number(el.dataset.price);
-    return void act(async () => check(await db.from("orders").update({ price_cents: cents }).eq("id", id)));
-  }
 });
+
+// Track price edits as they're typed, so a re-render mid-typing (a colleague's
+// action, a realtime event) doesn't need to wait for `change` to keep them.
+document.addEventListener("input", (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.dataset.price) pendingPrices.set(Number(el.dataset.price), el.value);
+});
+
+// Save on blur rather than `change`: a re-render replaces the input with a
+// fresh element whose value is set by the script, so the browser never sees
+// it "change" relative to that baseline and `change` would never fire.
+document.addEventListener("focusout", (e) => {
+  const el = e.target as HTMLInputElement;
+  const id = Number(el.dataset.price);
+  if (!el.dataset.price || !pendingPrices.has(id)) return;
+  void savePrice(id, el.value);
+});
+
+async function savePrice(id: number, text: string) {
+  const cents = parsePrice(text);
+  if (cents === undefined) {
+    state.error = `"${text}" isn't a price. Try 1.80`;
+    return render();
+  }
+  const order = state.orders.find((o) => o.id === id);
+  if (order && order.price_cents === cents) {
+    pendingPrices.delete(id);
+    return;
+  }
+  await act(async () => check(await db.from("orders").update({ price_cents: cents }).eq("id", id)));
+  pendingPrices.delete(id);
+}
 
 // ── Start ───────────────────────────────────────────────────────────────────
 
