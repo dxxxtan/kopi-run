@@ -12,7 +12,7 @@ const state = {
   members: [] as Member[],
   runs: [] as Run[],
   orders: [] as Order[],
-  loaded: false,
+  status: "loading" as "loading" | "ready" | "failed",
   error: null as string | null,
 };
 
@@ -48,7 +48,10 @@ function view(): string {
       <p>Copy <code>.env.example</code> to <code>.env</code> and fill in your Supabase URL and anon key, then restart <code>npm run dev</code>.</p>`);
   }
   if (!state.session) return signInView();
-  if (!state.loaded) return header() + card(`<p class="muted">Loading…</p>`);
+  if (state.status === "failed") {
+    return header() + errorBanner() + card(`<button data-action="retry">Retry</button>`);
+  }
+  if (state.status === "loading") return header() + card(`<p class="muted">Loading…</p>`);
   if (state.members.length === 0) {
     return header() + card(`<h2>You're not on the list</h2>
       <p><b>${esc(me())}</b> isn't one of the ten. Ask whoever set up Kopi Run to add you to the <code>members</code> table.</p>`);
@@ -174,10 +177,7 @@ function runView(run: Run): string {
     </div>
     ${orders.length ? `<ul class="orders">${rows}</ul>` : `<p class="muted">No orders yet.</p>`}
     ${add}
-    <div class="run-foot">
-      ${total ? `<span>Total ${money(total)}</span>` : "<span></span>"}
-      ${controls}
-    </div>
+    <div class="run-foot">${total ? `<span>Total ${money(total)}</span>` : ""}${controls}</div>
   `, run.status === "delivered" ? "past" : "");
 }
 
@@ -196,9 +196,9 @@ setInterval(() => {
 
 async function refresh() {
   try {
-    Object.assign(state, await loadAll(), { loaded: true });
+    Object.assign(state, await loadAll(), { status: "ready" });
   } catch (e) {
-    state.error = (e as Error).message;
+    Object.assign(state, { status: "failed", error: (e as Error).message });
   }
   render();
 }
@@ -275,6 +275,10 @@ document.addEventListener("click", (e) => {
     case "dismiss":
       state.error = null;
       return render();
+    case "retry":
+      Object.assign(state, { status: "loading", error: null });
+      render();
+      return void refresh();
     case "delete-order":
       return void act(async () => check(await db.from("orders").delete().eq("id", id)));
     case "set-status":
@@ -307,12 +311,12 @@ if (configured) {
     state.session = session;
     if (!changed) return;
     if (session) {
-      Object.assign(state, { pendingEmail: null, loaded: false });
+      Object.assign(state, { pendingEmail: null, status: "loading" });
       subscribe();
       void refresh();
     } else {
       channel?.unsubscribe();
-      Object.assign(state, { members: [], runs: [], orders: [], loaded: false });
+      Object.assign(state, { members: [], runs: [], orders: [], status: "loading" });
     }
     render();
   });
