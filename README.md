@@ -24,7 +24,7 @@ supabase/schema.sql   tables, row-level security, triggers, realtime
 
 ## Setup (one time, about 10 minutes)
 
-1. **Create a Supabase project** (free tier) at supabase.com.
+1. **Create a Supabase project** (free tier) at supabase.com. Its URL is `https://<id>.supabase.co`. The app also accepts the `…/rest/v1/` form the dashboard shows.
 2. **SQL Editor:** paste in all of `supabase/schema.sql` and run it. Then add the ten people:
    ```sql
    insert into members (email, name) values
@@ -39,7 +39,7 @@ supabase/schema.sql   tables, row-level security, triggers, realtime
    npm install
    npm run dev
    ```
-6. **Deploy:** in GitHub, go to repo → Settings → Secrets and variables → Actions → **Variables** and add `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Then, under Settings → Pages, set Source to **GitHub Actions**. Every push to `main` deploys.
+6. **Deploy:** in GitHub, go to repo → Settings → Secrets and variables → Actions and add repository secrets `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Then, under Settings → Pages, set Source to **GitHub Actions**. Every push to `main` deploys.
 
 The anon key is meant to be public. Row-level security protects the data.
 
